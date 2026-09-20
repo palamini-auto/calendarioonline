@@ -121,6 +121,25 @@
       .btn-cancel { background: #eee; color: #333; border: none; padding: 15px; flex: 1; cursor: pointer; border-radius: 4px; }
 
       #loading-msg { padding: 20px; font-size: 14px; color: #555; }
+
+      /* Sostitutive: cella divisa in segmenti (uno per persona) */
+      .seg-wrap { position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; z-index: 10; }
+      .seg {
+        flex: 1 1 0; min-height: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; padding: 2px; overflow: hidden;
+        text-align: center; font-weight: bold; font-size: 11px; line-height: 1.1;
+        word-break: break-word; cursor: pointer;
+      }
+      .seg + .seg { border-top: 1px solid rgba(255,255,255,0.85); }
+      .bg-panda .seg { background: #ff9800; }
+      .bg-clio  .seg { background: #9c27b0; }
+      .seg:hover { filter: brightness(1.2); outline: 2px solid #000; outline-offset: -2px; }
+      .seg-ora { font-size: 9px; font-weight: normal; opacity: 0.9; margin-top: 1px; }
+
+      #box-ora { display: none; font-size: 13px; color: #444; }
+      #box-ora label { font-weight: bold; margin-right: 6px; }
+      #select-ora { font-size: 15px; padding: 4px 6px; }
+      #box-ora .hint { font-size: 11px; color: #777; margin-top: 6px; line-height: 1.3; }
     </style>
   </head>
   <body>
@@ -134,6 +153,10 @@
         <div id="modal-title">MODIFICA</div>
         <div id="modal-info-data" style="font-size:13px;color:#666;font-weight:bold;"></div>
         <textarea id="input-lavoro" placeholder=""></textarea>
+        <div id="box-ora">
+          <label for="select-ora">Dalle ore</label><select id="select-ora"></select>
+          <div class="hint">Lascia l'ora com'è per modificare o cancellare questa assegnazione. Cambia l'ora per aggiungere una nuova persona da quell'ora in poi.</div>
+        </div>
         <div class="modal-buttons">
           <button class="btn-cancel" onclick="chiudiModal()">ANNULLA</button>
           <button class="btn-save" id="btn-save-lavoro" onclick="salvaLavoro()">SALVA</button>
@@ -213,22 +236,44 @@
         }
       }
 
-      // ── Salvataggio: aggiorna subito lo schermo, scrive in background ──
-      async function salvaLavoro() {
-        const v = document.getElementById('input-lavoro').value.trim().toUpperCase();
-        const { data, ora, tecnico } = datiModifica;
-        const riga = rigaMap[data + "|" + ora] || 0;
-
-        // aggiornamento locale immediato
+      // ── Aggiorna una cella nei dati locali (mappa + righe in cache) ──
+      function applicaLocale(data, ora, tecnico, v) {
         if (!datiGlobale.mappa[data]) datiGlobale.mappa[data] = {};
         if (!datiGlobale.mappa[data][ora]) datiGlobale.mappa[data][ora] = { ANDREA: "", MATTEO: "", SARA: "", PANDA: "", CLIO: "" };
         datiGlobale.mappa[data][ora][tecnico] = v;
         const idx = { ANDREA: 2, MATTEO: 3, SARA: 4, PANDA: 5, CLIO: 6 }[tecnico];
         const rr = righeGlobali.find(x => x[0] === data && x[1] === ora);
         if (rr && idx !== undefined) rr[idx] = v;
+      }
 
+      // ── Salvataggio: aggiorna subito lo schermo, scrive in background ──
+      async function salvaLavoro() {
+        const v = document.getElementById('input-lavoro').value.trim().toUpperCase();
+        const { data, tecnico } = datiModifica;
+        let ore;
+
+        if (datiModifica.veicolo) {
+          // Sostitutive: se l'ora è quella di partenza del segmento → modifica/cancella TUTTE
+          // le righe di quel segmento che hanno quel valore; se l'ora è diversa → nuova
+          // assegnazione a partire da quell'ora.
+          const sel = document.getElementById('select-ora').value;
+          const seg = datiModifica.segmento;
+          if (seg && sel === seg.inizio) {
+            ore = seg.ore.slice();
+          } else {
+            if (!v) { chiudiModal(); return; }
+            ore = [sel];
+          }
+        } else {
+          ore = [datiModifica.ora];
+        }
+
+        // aggiornamento locale immediato
+        ore.forEach(o => applicaLocale(data, o, tecnico, v));
         chiudiModal();
         render(datiGlobale);
+
+        const celle = ore.map(o => ({ ora: o, riga: rigaMap[data + "|" + o] || 0 }));
 
         salvataggiInCorso++;
         let errore = null;
@@ -236,7 +281,7 @@
           const r = await fetch("/api/scrivi", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ data, ora, tecnico, valore: v, riga })
+            body: JSON.stringify({ data, tecnico, valore: v, celle })
           });
           const j = await r.json();
           if (!r.ok || !j.success) throw new Error(j.errore || ("HTTP " + r.status));
@@ -285,8 +330,8 @@
         html += "</tr></thead><tbody>";
 
         dati.date.forEach(data => {
-          let valPanda = (dati.mappa[data]?.["08:00"]?.["PANDA"] || "").trim();
-          let valClio  = (dati.mappa[data]?.["08:00"]?.["CLIO"]  || "").trim();
+          const segPanda = segmentiVeicolo(dati, data, "PANDA");
+          const segClio  = segmentiVeicolo(dati, data, "CLIO");
           const dEsc = esc(data);
 
           nomi.forEach((nome, index) => {
@@ -297,8 +342,8 @@
 
             if (index === 0) {
               html += `<td rowspan="3" class='sticky-left col-1 bordo-giorno-sup bordo-giorno-inf'><div class="testo-unito">${dEsc}</div></td>`;
-              html += `<td rowspan="3" class='sticky-left col-2 bordo-giorno-sup bordo-giorno-inf ${valPanda && valPanda !== '/' && valPanda !== '.' ? 'bg-panda' : ''}' onclick="apriModalVeicolo('${dEsc}','PANDA')"><div class="testo-unito">${valPanda === '/' || valPanda === '.' ? '' : esc(valPanda)}</div></td>`;
-              html += `<td rowspan="3" class='sticky-left col-3 bordo-giorno-sup bordo-giorno-inf ${valClio  && valClio  !== '/' && valClio  !== '.' ? 'bg-clio'  : ''}' onclick="apriModalVeicolo('${dEsc}','CLIO')"><div class="testo-unito">${valClio  === '/' || valClio  === '.' ? '' : esc(valClio)}</div></td>`;
+              html += cellaVeicolo(dEsc, "PANDA", segPanda, "col-2", "bg-panda");
+              html += cellaVeicolo(dEsc, "CLIO", segClio, "col-3", "bg-clio");
             }
 
             html += `<td class='sticky-left col-4 ${rigaBordoCls}'><div class="testo-unito" style="color:#555">${visualNome}</div></td>`;
@@ -355,17 +400,59 @@
         apriModal(d, clickedOra, t, actualVal);
       }
 
-      // ── Click su PANDA / CLIO (valore letto dai dati, non passato inline) ──
-      function apriModalVeicolo(d, t) {
-        const v = (datiGlobale.mappa[d]?.["08:00"]?.[t] || "").trim();
-        apriModal(d, "08:00", t, v);
+      // ── Sostitutive (PANDA / CLIO) ──
+      // Il valore vale finché non compare un valore diverso: ogni cambio di valore
+      // durante la giornata è un "segmento" (es. PIPPO 8:00–9:00, FRANCO 9:00–fine).
+      // Celle vuote, "/" e "." non spezzano il segmento.
+      function segmentiVeicolo(dati, data, veicolo) {
+        const giorno = dati.mappa[data] || {};
+        const segs = [];
+        for (const ora of Object.keys(giorno)) {           // ordine del foglio
+          let v = (giorno[ora]?.[veicolo] || "").trim();
+          if (!v || v === "/" || v === ".") continue;
+          const last = segs[segs.length - 1];
+          if (last && last.valore === v) { last.ore.push(ora); continue; }
+          segs.push({ valore: v, inizio: ora, ore: [ora] });  // ore = righe che portano questo valore
+        }
+        segs.forEach((s, i) => { s.fine = i < segs.length - 1 ? segs[i + 1].inizio : null; });
+        return segs;
+      }
+
+      function cellaVeicolo(dEsc, veicolo, segs, colCls, bgCls) {
+        const base = `rowspan="3" class="sticky-left ${colCls} bordo-giorno-sup bordo-giorno-inf`;
+        if (!segs.length) {
+          return `<td ${base}" onclick="apriModalVeicolo('${dEsc}','${veicolo}',-1)"></td>`;
+        }
+        const fmt = o => o.replace(/^0/, "");
+        const multi = segs.length > 1;
+        let inner = "";
+        segs.forEach((s, i) => {
+          const orario = multi ? `<span class="seg-ora">${fmt(s.inizio)}–${s.fine ? fmt(s.fine) : "fine"}</span>` : "";
+          inner += `<div class="seg" onclick="apriModalVeicolo('${dEsc}','${veicolo}',${i})"><span class="seg-nome">${esc(s.valore)}</span>${orario}</div>`;
+        });
+        return `<td ${base} ${bgCls}"><div class="seg-wrap">${inner}</div></td>`;
+      }
+
+      function apriModalVeicolo(d, t, idx) {
+        const seg = idx >= 0 ? segmentiVeicolo(datiGlobale, d, t)[idx] : null;
+        apriModal(d, seg ? seg.inizio : "08:00", t, seg ? seg.valore : "", seg);
       }
 
       // ── Modal ──
-      function apriModal(d, o, t, v) {
-        datiModifica = { data: d, ora: o, tecnico: t };
-        document.getElementById('modal-title').innerText     = t + " - Ore " + o;
+      function apriModal(d, o, t, v, seg) {
+        const isV = (t === "PANDA" || t === "CLIO");
+        datiModifica = { data: d, ora: o, tecnico: t, veicolo: isV, segmento: seg || null };
+        document.getElementById('modal-title').innerText     = isV ? t + " (sostitutiva)" : t + " - Ore " + o;
         document.getElementById('modal-info-data').innerText = "Data: " + d;
+
+        const box = document.getElementById('box-ora');
+        box.style.display = isV ? 'block' : 'none';
+        if (isV) {
+          const sel = document.getElementById('select-ora');
+          sel.innerHTML = orariGlobal.map(x => `<option value="${x}">${x}</option>`).join("");
+          sel.value = o;
+        }
+
         const input = document.getElementById('input-lavoro');
         input.value = v;
         document.getElementById('modal-overlay').style.display = 'flex';
