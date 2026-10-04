@@ -25,6 +25,16 @@ functions/_lib/google.js     → auth service account + helper Sheets API
    - `SHEET_ID` *(opzionale)* = ID del foglio (altrimenti usa quello in `google.js`)
 5. Fai un nuovo deploy dopo aver messo le variabili.
 
+## Modifiche del 04/10/2026
+
+- Gli orari delle colonne vengono letti dal foglio (prima erano fissi fino alle 18:30 e dopo le 18:10 dava "Riga non trovata").
+- Pausa (bordo nero) calcolata da sola dove c'è un buco tra due orari (es. 12:00 → 13:50).
+- Orari che in un giorno non esistono (sabato pomeriggio) in grigio e non cliccabili.
+- All'apertura la pagina va su oggi (o sul primo giorno lavorativo dopo).
+- Aggiornamento automatico ogni 3 minuti invece di 15.
+- `/api/scrivi` riceve il valore che la cella aveva quando l'hai aperta (`prima`): se nel frattempo
+  un bot dell'app, il sito o un altro PC l'ha cambiata, non scrive, avvisa e ricarica.
+
 ## Sicurezza
 
 Gli endpoint `/api/*` sono aperti a chi conosce l'URL (come era il GAS pubblico).

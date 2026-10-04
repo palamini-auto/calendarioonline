@@ -39,6 +39,7 @@
       .col-time { width: var(--cell-width); min-width: var(--cell-width); }
 
       .bordo-pausa      { border-right: 1px solid #000 !important; }
+      td.no-slot        { background-color: #f3f3f3 !important; cursor: default; }
       .bordo-giorno-sup { border-top: 1px solid #000 !important; }
       .bordo-giorno-inf { border-bottom: 1px solid #000 !important; }
 
@@ -179,7 +180,9 @@
       let orariGlobal  = [];
       let salvataggiInCorso = 0;
 
-      const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+      const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+      let pauseGlobal = new Set();  // ultimo slot prima di una pausa (es. 12:00)
+      let giaPosizionato = false;   // scroll su oggi solo al primo caricamento
 
       // ── Da righe compatte del server a struttura { mappa, date } ──
       function costruisciDati(righe) {
@@ -226,6 +229,7 @@
           righeGlobali = j.righe;
           salvaCache();
           render(costruisciDati(righeGlobali));
+          if (!giaPosizionato) { giaPosizionato = true; vaiAOggi(); }
         } catch (err) {
           if (!datiGlobale) {
             document.getElementById('tabella-container').innerHTML =
@@ -268,12 +272,17 @@
           ore = [datiModifica.ora];
         }
 
+        // valore visto prima della modifica: il server controlla che nessuno l'abbia cambiato nel frattempo
+        const celle = ore.map(o => ({
+          ora: o,
+          riga: rigaMap[data + "|" + o] || 0,
+          prima: (datiGlobale.mappa[data]?.[o]?.[tecnico] || "").trim()
+        }));
+
         // aggiornamento locale immediato
         ore.forEach(o => applicaLocale(data, o, tecnico, v));
         chiudiModal();
         render(datiGlobale);
-
-        const celle = ore.map(o => ({ ora: o, riga: rigaMap[data + "|" + o] || 0 }));
 
         salvataggiInCorso++;
         let errore = null;
@@ -303,20 +312,7 @@
         datiGlobale = dati;
         const nomi = ["ANDREA", "MATTEO", "SARA"];
 
-        const orari = [];
-        for (let h = 8; h <= 12; h++) {
-          for (let m = 0; m < 60; m += 10) {
-            orari.push(`${h < 10 ? '0' + h : h}:${m == 0 ? '00' : m}`);
-            if (h == 12 && m == 0) break;
-          }
-        }
-        orari.push("13:50");
-        for (let h = 14; h <= 18; h++) {
-          for (let m = 0; m < 60; m += 10) {
-            orari.push(`${h < 10 ? '0' + h : h}:${m == 0 ? '00' : m}`);
-            if (h == 18 && m == 30) break;
-          }
-        }
+        const orari = orariDaDati(dati);
         orariGlobal = orari;
 
         let html = "<table><thead><tr>";
@@ -325,7 +321,7 @@
         html += "<th class='sticky-left col-3'>CLIO BIANCA</th>";
         html += "<th class='sticky-left col-4'>TEC</th>";
         orari.forEach(ora => {
-          html += `<th class='col-time ${ora === "12:00" ? "bordo-pausa" : ""}'>${ora}</th>`;
+          html += `<th class='col-time ${pauseGlobal.has(ora) ? "bordo-pausa" : ""}'>${ora}</th>`;
         });
         html += "</tr></thead><tbody>";
 
@@ -338,7 +334,7 @@
             let visualNome   = nome === "ANDREA" ? "A" : nome === "MATTEO" ? "M" : "S";
             let rigaBordoCls = nome === "ANDREA" ? "bordo-giorno-sup" : nome === "SARA" ? "bordo-giorno-inf" : "";
 
-            html += "<tr>";
+            html += index === 0 ? `<tr data-giorno="${dEsc}">` : "<tr>";
 
             if (index === 0) {
               html += `<td rowspan="3" class='sticky-left col-1 bordo-giorno-sup bordo-giorno-inf'><div class="testo-unito">${dEsc}</div></td>`;
@@ -353,10 +349,13 @@
               if (skip > 0) { skip--; return; }
 
               let valRaw   = (dati.mappa[data]?.[ora]?.[nome] || "").trim();
-              let isPausa  = (ora === "12:00");
+              let isPausa  = pauseGlobal.has(ora);
               let classiTd = `${rigaBordoCls} ${isPausa ? "bordo-pausa" : ""}`;
 
-              if (valRaw && valRaw !== "/" && valRaw !== ".") {
+              // orario che in questo giorno non esiste nel foglio (es. sabato pomeriggio): grigio, non cliccabile
+              if (!dati.mappa[data]?.[ora]) {
+                html += `<td class="no-slot ${classiTd}"></td>`;
+              } else if (valRaw && valRaw !== "/" && valRaw !== ".") {
                 let n    = contaDurata(dati, data, nome, ora, orari);
                 let tVal = valRaw.toUpperCase().trim();
                 let cls  = "";
@@ -381,6 +380,32 @@
         });
 
         document.getElementById('tabella-container').innerHTML = html + "</tbody></table>";
+      }
+
+      // ── Orari: quelli presenti nel foglio (così segue il calendario, anche se cambiano gli orari) ──
+      function orariDaDati(dati) {
+        const set = new Set();
+        dati.date.forEach(d => Object.keys(dati.mappa[d] || {}).forEach(o => set.add(o)));
+        const min = o => { const p = o.split(":"); return (+p[0]) * 60 + (+p[1]); };
+        const orari = [...set].filter(o => /^\d{1,2}:\d{2}$/.test(o)).sort((a, b) => min(a) - min(b));
+        // pausa = slot seguito da un buco di più di 10 minuti (es. 12:00 -> 13:50)
+        pauseGlobal = new Set(orari.filter((o, i) => i < orari.length - 1 && min(orari[i + 1]) - min(o) > 10));
+        return orari;
+      }
+
+      // ── Al primo caricamento mostra il giorno di oggi (o il primo giorno lavorativo dopo) ──
+      function vaiAOggi() {
+        const cont = document.getElementById('tabella-container');
+        for (let i = 0; i < 8; i++) {
+          const g = new Date(); g.setDate(g.getDate() + i);
+          const etichetta = g.toLocaleDateString("it-IT", { weekday: "long", day: "numeric", month: "long" });
+          const tr = [...cont.querySelectorAll("tr[data-giorno]")].find(t => t.dataset.giorno.toLowerCase() === etichetta.toLowerCase());
+          if (tr) {
+            const testa = cont.querySelector("thead");
+            cont.scrollTop = tr.offsetTop - (testa ? testa.offsetHeight : 0);
+            return;
+          }
+        }
       }
 
       // ── Click su cella (rileva lo slot preciso dentro un colspan) ──
@@ -476,7 +501,7 @@
             let v = (dati.mappa[data]?.[o]?.[nome] || "").trim();
             if (o === oraInizio || v === "/") {
               c++;
-              if (o === "12:00") break;
+              if (pauseGlobal.has(o)) break;
             } else break;
           }
         }
@@ -489,7 +514,7 @@
 
       document.addEventListener('mousemove', function(e) {
         const td = e.target.closest('td');
-        if (!td || td.classList.contains('sticky-left')) {
+        if (!td || td.classList.contains('sticky-left') || td.classList.contains('no-slot')) {
           if (hoverBox.parentNode) hoverBox.parentNode.removeChild(hoverBox);
           return;
         }
@@ -509,8 +534,9 @@
         if (hoverBox.parentNode) hoverBox.parentNode.removeChild(hoverBox);
       });
 
-      // ── Auto-refresh: ogni 15 min, solo se la pagina è visibile ──
-      const REFRESH_MS = 15 * 60 * 1000;
+      // ── Auto-refresh: ogni 3 min, solo se la pagina è visibile ──
+      // (i bot dell'app e il sito scrivono nel calendario: con 15 min si lavorava su dati vecchi)
+      const REFRESH_MS = 3 * 60 * 1000;
       let _refreshTimer  = null;
       let _lastRefresh   = 0;
 

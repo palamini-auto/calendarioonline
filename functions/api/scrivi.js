@@ -5,11 +5,14 @@ import { sheets, json } from "../_lib/google.js";
 //   più celle:     { data, tecnico, valore, celle: [{ ora, riga }, ...] }
 //
 // `riga` è il numero di riga nel foglio (suggerimento del client, arriva da /api/dati).
-// Prima si verifica con UNA lettura piccola (solo A:B delle righe interessate) che data e ora
+// Prima si verifica con UNA lettura piccola (A:G delle righe interessate) che data e ora
 // corrispondano ancora; se qualcuno ha inserito/spostato righe, si cercano le righe giuste.
+// `prima` (facoltativo) è il valore che il client vedeva nella cella: se nel frattempo
+// qualcuno l'ha cambiato (bot dell'app, sito, altro PC) non si scrive e si risponde 409.
 // Poi UNA sola scrittura (values:batchUpdate) per tutte le celle.
 
 const COL = { ANDREA: "C", MATTEO: "D", SARA: "E", PANDA: "F", CLIO: "G" };
+const IDX = { C: 2, D: 3, E: 4, F: 5, G: 6 };
 const norm = (s) => String(s ?? "").trim();
 const enc = encodeURIComponent;
 const MAX_CELLE = 100;
@@ -21,9 +24,10 @@ export async function onRequestPost({ request, env }) {
     const col = COL[norm(body.tecnico).toUpperCase()];
     const valore = String(body.valore ?? "");
 
-    const celle = (Array.isArray(body.celle) ? body.celle : [{ ora: body.ora, riga: body.riga }]).map(
-      (c) => ({ ora: norm(c.ora), riga: parseInt(c.riga, 10) || 0 })
+    const celle = (Array.isArray(body.celle) ? body.celle : [{ ora: body.ora, riga: body.riga, prima: body.prima }]).map(
+      (c) => ({ ora: norm(c.ora), riga: parseInt(c.riga, 10) || 0, prima: c.prima === undefined ? undefined : norm(c.prima) })
     );
+    const attuale = {}; // riga -> valore attuale della cella da scrivere
 
     if (!data || !col || !celle.length || celle.length > MAX_CELLE || celle.some((c) => !c.ora)) {
       return json({ success: false, errore: "Parametri non validi" }, 400);
@@ -38,11 +42,12 @@ export async function onRequestPost({ request, env }) {
       if (max - min <= 400) {
         const chk = await sheets(
           env,
-          `/values/${enc(`CALENDARIO!A${min}:B${max}`)}?valueRenderOption=FORMATTED_VALUE`
+          `/values/${enc(`CALENDARIO!A${min}:G${max}`)}?valueRenderOption=FORMATTED_VALUE`
         );
         const v = chk.values || [];
         ok = celle.every((c) => {
           const r = v[c.riga - min] || [];
+          attuale[c.riga] = norm(r[IDX[col]]);
           return norm(r[0]) === data && norm(r[1]) === c.ora;
         });
       }
@@ -52,7 +57,7 @@ export async function onRequestPost({ request, env }) {
     if (!ok) {
       const all = await sheets(
         env,
-        `/values/${enc("CALENDARIO!A:B")}?valueRenderOption=FORMATTED_VALUE`
+        `/values/${enc("CALENDARIO!A:G")}?valueRenderOption=FORMATTED_VALUE`
       );
       const values = all.values || [];
       const perOra = {};
@@ -65,10 +70,22 @@ export async function onRequestPost({ request, env }) {
       for (const c of celle) {
         c.riga = perOra[c.ora] || 0;
         if (!c.riga) return json({ success: false, errore: `Riga non trovata (${data} ${c.ora})` }, 404);
+        attuale[c.riga] = norm((values[c.riga - 1] || [])[IDX[col]]);
       }
     }
 
-    // 3) scrittura (USER_ENTERED = stesso comportamento di setValue)
+    // 3) nessuno deve aver cambiato la cella dopo che il client l'ha letta
+    const cambiate = celle.filter((c) => c.prima !== undefined && attuale[c.riga] !== c.prima);
+    if (cambiate.length) {
+      const c = cambiate[0];
+      return json({
+        success: false,
+        conflitto: true,
+        errore: `Nel frattempo la cella delle ${c.ora} è cambiata (ora c'è: "${attuale[c.riga] || "vuota"}"). Ricarico il calendario: controlla e riprova.`,
+      }, 409);
+    }
+
+    // 4) scrittura (USER_ENTERED = stesso comportamento di setValue)
     await sheets(env, "/values:batchUpdate", {
       method: "POST",
       body: JSON.stringify({
