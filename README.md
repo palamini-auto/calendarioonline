@@ -34,6 +34,18 @@ functions/_lib/google.js     → auth service account + helper Sheets API
 - Aggiornamento automatico ogni 3 minuti invece di 15.
 - `/api/scrivi` riceve il valore che la cella aveva quando l'hai aperta (`prima`): se nel frattempo
   un bot dell'app, il sito o un altro PC l'ha cambiata, non scrive, avvisa e ricarica.
+- Le colonne del CALENDARIO si cercano per intestazione (`functions/_lib/calendario.js`), non più
+  per posizione A:G: il sito funziona sia col foglio di oggi (ANDREA, MATTEO, SARA, PANDA, CLIO) sia
+  dopo la migrazione del database (ID in colonna A, TECNICO 1/2/3, AUTO 1/2). Va pubblicato
+  PRIMA del passaggio al database nuovo.
+
+## Modifiche del 06/10/2026 (calendario dentro l'app)
+
+- `/api/dati` restituisce anche l'ID fisso della riga (colonna ID, se c'è: dopo la migrazione).
+- Pagina dentro l'app (estensione "Calendario web nell'app"): nel riquadro di modifica c'è "APRI NELL'APP"
+  (apre la riga nell'app) e dopo ogni salvataggio l'app viene avvisata per sincronizzarsi.
+- `?sola_lettura=1`: niente modifiche, un clic su un appuntamento apre la riga nell'app (usato nell'app di prova).
+- Usata da sola (fuori dall'app) la pagina funziona esattamente come prima.
 
 ## Sicurezza
 

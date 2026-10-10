@@ -1,18 +1,19 @@
 import { sheets, json } from "../_lib/google.js";
+import { colonne, lettera } from "../_lib/calendario.js";
 
 // POST /api/scrivi
 //   singola cella: { data, ora, tecnico, valore, riga }
 //   più celle:     { data, tecnico, valore, celle: [{ ora, riga }, ...] }
 //
 // `riga` è il numero di riga nel foglio (suggerimento del client, arriva da /api/dati).
-// Prima si verifica con UNA lettura piccola (A:G delle righe interessate) che data e ora
+// Prima si verifica con UNA lettura piccola (solo le righe interessate) che data e ora
 // corrispondano ancora; se qualcuno ha inserito/spostato righe, si cercano le righe giuste.
 // `prima` (facoltativo) è il valore che il client vedeva nella cella: se nel frattempo
 // qualcuno l'ha cambiato (bot dell'app, sito, altro PC) non si scrive e si risponde 409.
 // Poi UNA sola scrittura (values:batchUpdate) per tutte le celle.
+// Le colonne si trovano per intestazione (vedi _lib/calendario.js).
 
-const COL = { ANDREA: "C", MATTEO: "D", SARA: "E", PANDA: "F", CLIO: "G" };
-const IDX = { C: 2, D: 3, E: 4, F: 5, G: 6 };
+const TECNICI = ["ANDREA", "MATTEO", "SARA", "PANDA", "CLIO"];
 const norm = (s) => String(s ?? "").trim();
 const enc = encodeURIComponent;
 const MAX_CELLE = 100;
@@ -21,7 +22,7 @@ export async function onRequestPost({ request, env }) {
   try {
     const body = await request.json();
     const data = norm(body.data);
-    const col = COL[norm(body.tecnico).toUpperCase()];
+    const tecnico = norm(body.tecnico).toUpperCase();
     const valore = String(body.valore ?? "");
 
     const celle = (Array.isArray(body.celle) ? body.celle : [{ ora: body.ora, riga: body.riga, prima: body.prima }]).map(
@@ -29,9 +30,12 @@ export async function onRequestPost({ request, env }) {
     );
     const attuale = {}; // riga -> valore attuale della cella da scrivere
 
-    if (!data || !col || !celle.length || celle.length > MAX_CELLE || celle.some((c) => !c.ora)) {
+    if (!data || !TECNICI.includes(tecnico) || !celle.length || celle.length > MAX_CELLE || celle.some((c) => !c.ora)) {
       return json({ success: false, errore: "Parametri non validi" }, 400);
     }
+
+    let C = await colonne(env);
+    let ultima = lettera(C.ultima);
 
     // 1) verifica dei suggerimenti di riga (una sola lettura sul blocco di righe interessato)
     let ok = false;
@@ -42,35 +46,37 @@ export async function onRequestPost({ request, env }) {
       if (max - min <= 400) {
         const chk = await sheets(
           env,
-          `/values/${enc(`CALENDARIO!A${min}:G${max}`)}?valueRenderOption=FORMATTED_VALUE`
+          `/values/${enc(`CALENDARIO!A${min}:${ultima}${max}`)}?valueRenderOption=FORMATTED_VALUE`
         );
         const v = chk.values || [];
         ok = celle.every((c) => {
           const r = v[c.riga - min] || [];
-          attuale[c.riga] = norm(r[IDX[col]]);
-          return norm(r[0]) === data && norm(r[1]) === c.ora;
+          attuale[c.riga] = norm(r[C[tecnico]]);
+          return norm(r[C.DATA]) === data && norm(r[C.ORARIO]) === c.ora;
         });
       }
     }
 
-    // 2) fallback: cerca le righe leggendo solo le colonne A:B
+    // 2) fallback: rilegge le intestazioni (le colonne potrebbero essere state spostate) e cerca le righe
     if (!ok) {
+      C = await colonne(env, true);
+      ultima = lettera(C.ultima);
       const all = await sheets(
         env,
-        `/values/${enc("CALENDARIO!A:G")}?valueRenderOption=FORMATTED_VALUE`
+        `/values/${enc(`CALENDARIO!A:${ultima}`)}?valueRenderOption=FORMATTED_VALUE`
       );
       const values = all.values || [];
       const perOra = {};
       for (let i = 1; i < values.length; i++) {
-        if (norm(values[i][0]) === data) {
-          const o = norm(values[i][1]);
+        if (norm(values[i][C.DATA]) === data) {
+          const o = norm(values[i][C.ORARIO]);
           if (!(o in perOra)) perOra[o] = i + 1; // prima occorrenza, come nel GAS originale
         }
       }
       for (const c of celle) {
         c.riga = perOra[c.ora] || 0;
         if (!c.riga) return json({ success: false, errore: `Riga non trovata (${data} ${c.ora})` }, 404);
-        attuale[c.riga] = norm((values[c.riga - 1] || [])[IDX[col]]);
+        attuale[c.riga] = norm((values[c.riga - 1] || [])[C[tecnico]]);
       }
     }
 
@@ -91,7 +97,7 @@ export async function onRequestPost({ request, env }) {
       body: JSON.stringify({
         valueInputOption: "USER_ENTERED",
         data: celle.map((c) => ({
-          range: `CALENDARIO!${col}${c.riga}`,
+          range: `CALENDARIO!${lettera(C[tecnico])}${c.riga}`,
           values: [[valore]],
         })),
       }),

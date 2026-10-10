@@ -160,6 +160,7 @@
         </div>
         <div class="modal-buttons">
           <button class="btn-cancel" onclick="chiudiModal()">ANNULLA</button>
+          <button class="btn-cancel" id="btn-apri-app" style="display:none" onclick="chiudiModal(); apriNellApp(datiModifica.data, datiModifica.ora, datiModifica.tecnico)">APRI NELL'APP</button>
           <button class="btn-save" id="btn-save-lavoro" onclick="salvaLavoro()">SALVA</button>
         </div>
       </div>
@@ -172,6 +173,25 @@
       //   POST /api/scrivi
       // ============================================================
       const CACHE_KEY = "calendario_righe_v1";
+
+      // ── Calendario incorporato nell'app AppSheet (estensione "Calendario web nell'app") ──
+      //   ?sola_lettura=1 → nessuna modifica: un clic apre la riga nell'app (usato col clone, che ha dati diversi)
+      //   dentro l'app: pulsante "APRI NELL'APP" nel riquadro di modifica, e dopo ogni salvataggio
+      //   l'app viene avvisata così si sincronizza da sola.
+      const PARAMETRI    = new URLSearchParams(location.search);
+      const SOLA_LETTURA = PARAMETRI.get("sola_lettura") === "1";
+      const INCORPORATO  = window.parent !== window;
+      // in prova sul PC (localhost) la pagina "app" finta non è su appsheet.com
+      const ORIGINE_APP  = /^(localhost|127\.0\.0\.1)$/.test(location.hostname) ? "*" : "https://www.appsheet.com";
+      let idMap = {};            // "data|ora" -> ID fisso della riga (es. 202611190840), se il foglio ce l'ha
+
+      function avvisaApp(msg) {
+        if (INCORPORATO) window.parent.postMessage(Object.assign({ palamini: true }, msg), ORIGINE_APP);
+      }
+      function apriNellApp(data, ora, tecnico) {
+        const id = idMap[data + "|" + ora];
+        if (id) avvisaApp({ tipo: "apri", id, data, ora, tecnico });
+      }
 
       let datiModifica = {};
       let datiGlobale  = null;   // { mappa, date }
@@ -189,11 +209,13 @@
         const mappa = {};
         const date  = [];
         rigaMap = {};
+        idMap = {};
         righe.forEach(r => {
-          const [data, ora, A, M, S, P, C, riga] = r;
+          const [data, ora, A, M, S, P, C, riga, id] = r;
           if (!mappa[data]) { mappa[data] = {}; date.push(data); }
           mappa[data][ora] = { ANDREA: A, MATTEO: M, SARA: S, PANDA: P || "", CLIO: C || "" };
           rigaMap[data + "|" + ora] = riga;
+          if (id) idMap[data + "|" + ora] = id;
         });
         return { mappa, date };
       }
@@ -252,6 +274,7 @@
 
       // ── Salvataggio: aggiorna subito lo schermo, scrive in background ──
       async function salvaLavoro() {
+        if (SOLA_LETTURA) { chiudiModal(); return; }
         const v = document.getElementById('input-lavoro').value.trim().toUpperCase();
         const { data, tecnico } = datiModifica;
         let ore;
@@ -295,6 +318,7 @@
           const j = await r.json();
           if (!r.ok || !j.success) throw new Error(j.errore || ("HTTP " + r.status));
           salvaCache();
+          avvisaApp({ tipo: "scritto", data, tecnico });
         } catch (err) {
           errore = err;
         } finally {
@@ -466,6 +490,10 @@
       // ── Modal ──
       function apriModal(d, o, t, v, seg) {
         const isV = (t === "PANDA" || t === "CLIO");
+        // solo visualizzazione: niente modifica, un clic su un tecnico apre la riga nell'app
+        if (SOLA_LETTURA) { if (!isV) apriNellApp(d, o, t); return; }
+        const btnApri = document.getElementById('btn-apri-app');
+        btnApri.style.display = (INCORPORATO && !isV && idMap[d + "|" + o]) ? '' : 'none';
         datiModifica = { data: d, ora: o, tecnico: t, veicolo: isV, segmento: seg || null };
         document.getElementById('modal-title').innerText     = isV ? t + " (sostitutiva)" : t + " - Ore " + o;
         document.getElementById('modal-info-data').innerText = "Data: " + d;
@@ -565,8 +593,22 @@
         }
       });
 
+      // ── Dall'app (estensione PALAMINIAUTO): "aggiorna" = ricarica i dati adesso ──
+      window.addEventListener('message', (e) => {
+        if (!INCORPORATO || e.source !== window.parent) return;
+        if (ORIGINE_APP !== "*" && e.origin !== ORIGINE_APP) return;
+        const d = e.data;
+        if (d && d.palamini === true && d.tipo === "aggiorna") _caricaESegna();
+      });
+
       // ── Avvio: mostra subito la cache locale (se c'è), poi aggiorna dal foglio ──
       (function avvio() {
+        if (SOLA_LETTURA) {
+          const b = document.createElement('div');
+          b.textContent = "SOLO VISUALIZZAZIONE · clic = apri nell'app";
+          b.style.cssText = "position:fixed;right:8px;bottom:8px;z-index:50;background:#fff3cd;color:#664d03;border:1px solid #e0c36b;border-radius:6px;padding:4px 10px;font:12px sans-serif;pointer-events:none";
+          document.body.appendChild(b);
+        }
         const cached = leggiCache();
         if (cached && cached.length) {
           righeGlobali = cached;
