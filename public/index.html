@@ -181,6 +181,15 @@
       const PARAMETRI    = new URLSearchParams(location.search);
       const SOLA_LETTURA = PARAMETRI.get("sola_lettura") === "1";
       const INCORPORATO  = window.parent !== window;
+      // Chiave del calendario: la passa l'estensione nell'indirizzo (#k=…, non arriva ai log del server).
+      // Si ricorda su questo PC, poi si toglie dalla barra degli indirizzi. Va mandata a /api/* (X-Chiave).
+      const CHIAVE = (() => {
+        const m = location.hash.match(/(?:^#|&)k=([^&]+)/);
+        let k = m ? decodeURIComponent(m[1]) : "";
+        try { if (k) localStorage.setItem("pm_chiave", k); else k = localStorage.getItem("pm_chiave") || ""; } catch (e) {}
+        if (m) history.replaceState(null, "", location.pathname + location.search);
+        return k;
+      })();
       // in prova sul PC (localhost) la pagina "app" finta non è su appsheet.com
       const ORIGINE_APP  = /^(localhost|127\.0\.0\.1)$/.test(location.hostname) ? "*" : "https://www.appsheet.com";
       let idMap = {};            // "data|ora" -> ID fisso della riga (es. 202611190840), se il foglio ce l'ha
@@ -245,7 +254,7 @@
         // non sovrascrivere la schermata mentre c'è un salvataggio in corso
         if (salvataggiInCorso > 0 && !force) return;
         try {
-          const r = await fetch("/api/dati", { cache: "no-store" });
+          const r = await fetch("/api/dati", { cache: "no-store", headers: { "X-Chiave": CHIAVE } });
           const j = await r.json();
           if (!r.ok || j.errore) throw new Error(j.errore || ("HTTP " + r.status));
           righeGlobali = j.righe;
@@ -312,7 +321,7 @@
         try {
           const r = await fetch("/api/scrivi", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", "X-Chiave": CHIAVE },
             body: JSON.stringify({ data, tecnico, valore: v, celle })
           });
           const j = await r.json();
